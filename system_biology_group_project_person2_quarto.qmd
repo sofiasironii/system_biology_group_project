@@ -1,0 +1,168 @@
+---
+title: "system_biology_group_project_person_2"
+format: html
+editor: visual
+---
+
+## **Gene-level analysis: GSE130967**
+
+#### loading and inspecting data
+
+```{r}
+library(tidyverse)
+library(DESeq2)
+library(fgsea)
+library(msigdbr)
+library(ggrepel)
+library(pheatmap)
+```
+
+```{r}
+gene_counts_vivo <- readRDS("Data/raw/data_in_vivo_gene.rds")
+metadata_vivo <- readRDS("Data/raw/metadata_in_vivo.rds")
+```
+
+```{r}
+#check columns / rows names
+dim(gene_counts_vivo)
+metadata_vivo <- metadata_vivo[colnames(gene_counts_vivo), ]
+all(colnames(gene_counts_vivo) == rownames(metadata_vivo))
+```
+
+#### data quality control
+
+```{r}
+#only keeping genes that have at least one value that's not zero
+gene_counts_vivo_filt <- gene_counts_vivo[rowSums(gene_counts_vivo) > 0, ]
+#round decimal numbers to do DESeq2
+gene_counts_vivo_filt <- round(gene_counts_vivo_filt)
+```
+
+#### standard differential gene expression
+
+```{r}
+all(rownames(metadata_vivo) == colnames(gene_counts_vivo_filt))
+```
+
+```{r}
+dds <- DESeqDataSetFromMatrix(countData = gene_counts_vivo_filt, colData = metadata_vivo, design = ~ smoking)
+
+#normalize data
+vsd <-  vst(dds, blind = TRUE)
+plotPCA(vsd, intgroup = "smoking") +
+  scale_color_manual(values = c("nonsmoker" = "maroon", "smoker" = "blue4")) +
+  labs(title = "PCA: Smokers vs Non-smokers") +
+  theme_minimal(base_size = 13)
+```
+
+#### PCA with confounders -\> sex and age
+
+```{r}
+plotPCA(vsd, intgroup = c("smoking", "sex")) +
+  labs(title = "PCA by Smoking and Sex") +
+  scale_color_manual(values = c("maroon", "navy", "pink", "#007fff")) +
+  theme_minimal(base_size = 13)
+```
+
+```{r}
+vsd$age_group <- cut(
+  vsd$age,
+  breaks = c(-Inf, 45, 60, Inf),
+  labels = c("<45", "45-60", ">60")
+)
+age_smoke_colors <- c(
+  "nonsmoker:<45"   = "#007fff", 
+  "nonsmoker:45-60" = "blue",
+  "nonsmoker:>60"   = "navy",
+  "smoker:<45"      = "#ff99ff", 
+  "smoker:45-60"    = "#CC33FF",
+  "smoker:>60"      = "#cc0066"  
+)
+plotPCA(vsd, intgroup = c("smoking", "age_group")) +
+  scale_color_manual(values = age_smoke_colors) +
+  labs(title = "PCA by Smoking and Age", color = "Group : Age") +
+  theme_minimal(base_size = 13)
+```
+
+#### DESeq2 -\> before and after correcting for confounders
+
+```{r}
+#base model
+dds <- DESeq(dds)
+res_before <- results(dds, contrast = c("smoking", "smoker", "nonsmoker"))
+```
+
+```{r}
+#removing NA values
+to_keep <- complete.cases(metadata_vivo[, c("smoking", "sex", "age")])
+metadata_vivo_adjusted <- metadata_vivo[to_keep, ]
+counts_vivo_adjusted <- gene_counts_vivo_filt[, to_keep]
+```
+
+```{r}
+#adjust variables
+metadata_vivo_adjusted$smoking <- relevel(metadata_vivo_adjusted$smoking, ref = "nonsmoker")
+metadata_vivo_adjusted$age_scaled <- as.numeric(scale(metadata_vivo_adjusted$age))
+```
+
+```{r}
+#correct model
+dds_adjusted <- DESeqDataSetFromMatrix(countData = counts_vivo_adjusted, colData = metadata_vivo_adjusted, design = ~ sex + age_scaled + smoking)
+dds_adjusted <- DESeq(dds_adjusted)
+res_adjusted <- results(dds_adjusted, contrast = c("smoking", "smoker", "nonsmoker"))
+```
+
+```{r}
+#confronting DESeq befor and after correcting for confounders
+signif_before <- rownames(res_before)[!is.na(res_before$padj) & res_before$padj < 0.05]
+signif_adjusted <- rownames(res_adjusted)[!is.na(res_adjusted$padj) & res_adjusted$padj < 0.05]
+length(intersect(signif_before, signif_adjusted))
+```
+
+#### significantly differentially expressed genes
+
+```{r}
+gene_map <- isoInfo %>% dplyr::select(gene_id, gene_name) %>% distinct()
+res_dataframe <- as.data.frame(res_adjusted) %>% rownames_to_column("gene_id") %>% left_join(gene_map, by = "gene_id") %>% arrange(padj)
+degs <- res_dataframe %>% filter(!is.na(padj), padj < 0.05, abs(log2FoldChange) > 1)
+```
+
+```{r}
+nrow(degs) #total number of significant genes
+sum(degs$log2FoldChange > 0) #number of significant genes with a positive log2FoldChange
+sum(degs$log2FoldChange < 0) #number of significant genes with a negative log2FoldChange
+```
+
+#### volcano plots and heatmaps
+
+```{r}
+volcano_dataframe <- res_dataframe %>% filter(!is.na(padj)) %>% mutate(status = case_when(padj < 0.05 & log2FoldChange >  1 ~ "Up in Smokers", padj < 0.05 & log2FoldChange < -1 ~ "Down in Smokers", TRUE ~ "Non Smokers"), mlog10padj = -log10(padj))
+to_label <- volcano_dataframe %>% filter(status != "Non Smokers", !is.na(gene_name)) %>% slice_head(n = 10)
+ggplot(volcano_dataframe, aes(x = log2FoldChange, y = mlog10padj, color = status)) +
+  geom_point(alpha = 0.75) +
+  geom_hline(yintercept = -log10(0.05), linetype = 2) +
+  geom_vline(xintercept = c(-1, 1), linetype = 2) +
+  geom_text_repel(data = to_label, aes(label = gene_name), color = "black", size = 3.5, show.legend = FALSE) +
+  scale_color_manual(values = c("Down in Smokers" = "blue", "n.s." = "grey", "Up in Smokers" = "pink")) +
+  labs(x = "log2 Fold Change", y = "-log10(padj)", color = "Status", title = "Volcano Plot: Smokers vs Non-smokers") +
+  theme_minimal(base_size = 13)
+```
+
+```{r}
+rld_adjusted <- vst(dds_adjusted, blind = TRUE)
+top_ids <- head(degs$gene_id, 30)
+mat_top <- assay(rld_adjusted)[top_ids, ]
+rownames(mat_top) <- degs$gene_name[match(top_ids, degs$gene_id)]
+```
+
+```{r}
+pheatmap(mat_top, scale = "row", annotation_col = metadata_vivo_adjusted[, c("smoking", "sex", "age")], show_colnames = FALSE, fontsize_row = 9, main = "Top 30 DEGs"
+)
+```
+
+#### saving results
+
+```{r}
+saveRDS(res_dataframe, file = "Data/raw/results_in_vivo_df.rds")
+saveRDS(degs, file = "Data/raw/significant_genes_vivo.rds")
+```

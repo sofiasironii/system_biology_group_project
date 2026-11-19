@@ -1,0 +1,86 @@
+---
+title: "functions_syst_biology_project"
+format: html
+editor: visual
+---
+
+## loading data and functions
+
+```{r}
+load(file='/home/projects/22140/exam_data/exam_functions.Rdata')
+isoform_count1 <- loadIsoformCountMatrix("GSE135188")
+isoform_count2 <- loadIsoformCountMatrix("GSE130967,GSE133924,GSE154136")
+gene_count1 <- extractGeneCountMatrixFromIsoCounts(isoform_count1)
+gene_count2 <- extractGeneCountMatrixFromIsoCounts(isoform_count2)
+```
+
+```{r}
+isoInfo <- read_rds(
+  paste0(
+    '/home/projects/22140/exam_data/',
+    'Homo_sapiens.GRCh38.107.chr_patch_hapl_scaff_tx_info.Rds'
+  )
+)
+```
+
+#### create files
+
+```{r}
+saveRDS(isoform_count1, file = "Data/raw/data_in_vitro_iso.rds")
+saveRDS(isoform_count2, file = "Data/raw/data_in_vivo_iso.rds")
+saveRDS(gene_count1, file = "Data/raw/data_in_vitro_gene.rds")
+saveRDS(gene_count2, file = "Data/raw/data_in_vivo_gene.rds")
+```
+
+#### metadata
+
+```{r}
+if (!requireNamespace("GEOquery", quietly = TRUE)) {
+  BiocManager::install("GEOquery")
+}
+library(GEOquery)
+```
+
+```{r}
+in_vitro_1 <- getGEO("GSE135188", GSEMatrix = TRUE)
+in_vitro_1_pd <- pData(in_vitro_1[[1]]) 
+in_vivo_1 <- getGEO("GSE130967", GSEMatrix = TRUE)
+in_vivo_1_pd <- pData(in_vivo_1[[1]]) 
+```
+
+#### building metadata
+
+```{r}
+saveRDS(in_vitro_1_pd, file = "Data/raw/in_vitro_pd1.rds")
+saveRDS(in_vivo_1_pd, file = "Data/raw/in_vivo_pd1.rds")
+metadata_in_vitro_1 <- data.frame(
+  donor     = factor(in_vitro_1_pd$`donor:ch1`),
+  treatment = factor(in_vitro_1_pd$`treatment:ch1`, levels = c("air", "CS")),
+  disease   = factor(in_vitro_1_pd$`disease state:ch1`, levels = c("healthy", "COPD")),
+  sex       = factor(in_vitro_1_pd$`Sex:ch1`),
+  age       = as.numeric(in_vitro_1_pd$`age:ch1`),
+  ethnicity = factor(in_vitro_1_pd$`ethnicity:ch1`),
+  row.names = rownames(in_vitro_1_pd)
+)
+metadata_in_vivo_1 <- data.frame(
+  smoking   = factor(in_vivo_1_pd$`phenotype:ch1`, levels = c("nonsmoker", "smoker")),
+  sex       = factor(in_vivo_1_pd$`gender:ch1`),
+  age       = as.numeric(in_vivo_1_pd$`age:ch1`),
+  ethnicity = factor(in_vivo_1_pd$`ethnicity:ch1`),
+  row.names = rownames(in_vivo_1_pd)
+)
+```
+
+```{r}
+all(colnames(gene_count1) == rownames(metadata_in_vitro_1))
+all(colnames(gene_count2) == rownames(metadata_in_vivo_1))
+setdiff(rownames(metadata_in_vivo_1), colnames(gene_count2))   # campioni in pd2 ma non in data2
+setdiff(colnames(gene_count2), rownames(metadata_in_vivo_1))   # campioni in data2 ma non in pd2
+metadata_in_vivo_1 <- metadata_in_vivo_1[colnames(gene_count2), ]
+all(colnames(gene_count2) == rownames(metadata_in_vivo_1))
+```
+
+```{r}
+saveRDS(metadata_in_vitro_1, file = "Data/raw/metadata_in_vitro.rds")
+saveRDS(metadata_in_vivo_1, file = "Data/raw/metadata_in_vivo.rds")
+```
