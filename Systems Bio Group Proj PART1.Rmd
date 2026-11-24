@@ -1,0 +1,200 @@
+##Loading data and checking alignment 
+
+```{r}
+metadata = readRDS('metadata_in_vitro.rds')
+head(metadata)
+str(metadata)
+dim(metadata)
+```
+```{r}
+gene_counts = readRDS("data_in_vitro_gene.rds")
+dim(gene_counts)
+gene_counts[1:6, 1:6]
+head(colnames(gene_counts))
+head(rownames(gene_counts))
+```
+```{r}
+metadata = metadata[colnames(gene_counts), ]
+all(colnames(gene_counts) == rownames(metadata))
+```
+## Data quality control 
+The first check determined if there were any missing values, neagtive values, and what the minimum and maximum counts are, as well as the decimal values of the results 
+```{r}
+sum(is.na(gene_counts))
+sum(gene_counts < 0)
+range(gene_counts)
+sum(gene_counts %% 1 !=0)
+```
+Next the genes with a zero count will be removed 
+```{r}
+gene_count_filter = gene_counts[rowSums(gene_counts) > 0, ]
+
+dim(gene_counts)
+dim(gene_count_filter)
+```
+The samples have been reduced down to 51646 genes 
+```{r}
+library_size = colSums(gene_count_filter)
+library_size
+
+barplot(library_size, las = 2, 
+        main = "Library Size Across Samples",
+        ylab = "Total Read Counts",
+        xlab = "Samples",
+        col = "olivedrab3")
+```
+visualising the library size distribution
+```{r}
+boxplot(library_size / 1e6, 
+        main = "Library Size Across Samples",
+        ylab = "Total Gene Counts (Millions)",
+        xlab = "Samples",
+        col = "rosybrown1",
+        las = 2)
+abline(h = median(library_size / 1e6),
+       col = "maroon",
+       lty = 2)
+```
+
+- No obvious outliers
+- average is almost 60 million reads 
+- largest sample is approximatley 90 million reads
+- smallest sample is approximately 30 million reads
+
+## PCA
+```{r}
+library(DESeq2)
+```
+
+```{r}
+colnames(metadata)
+table(metadata$treatment)
+table(metadata$donor)
+
+
+donor = factor(metadata$donor)
+treatment = factor(metadata$treatment)
+treatment = relevel(metadata$treatment, ref = "air")
+
+
+
+dds = DESeqDataSetFromMatrix(countData = gene_count_filter, colData = metadata, design =  ~ donor + treatment)
+
+dds
+```
+```{r} 
+dds = DESeq(dds)
+resultsNames(dds)
+```
+```{r}
+results = results(dds, name = "treatment_CS_vs_air")
+summary(results)
+head(results)
+
+```
+upregulated - genes w higher expression after CS exposure compared to air 
+downregulated - genes w lower expression after CS exposure compared to air 
+
+more genes were downregulated 
+
+Determining the most significant genes:
+```{r}
+res_ordered = results[order(results$padj), ]
+head(res_ordered, 10)
+
+res_sig = results[!is.na(results$padj) & results$padj < 0.1, ]
+dim(res_sig)
+```
+```{r}
+table(metadata$donor, metadata$treatment)
+table(metadata$disease, metadata$treatment)
+```
+### Volcano Plot
+```{r}
+plotMA(results, 
+       main = "CS vs Air",
+       ylim = c(-5,5))
+```
+
+```{r}
+plot(results$log2FoldChange, 
+     -log10(results$padj),
+     pch = 20,
+     col = ifelse(results$padj < 0.1 & results$log2FoldChange > 0, "deeppink4",
+                  
+                  ifelse(results$padj < 0.1 & results$log2FoldChange < 0, 
+                         "cadetblue", "khaki2")),
+     xlab = "Log2 Fold Change (CS vs Air)",
+     ylab = "-Log10 Adjusted P-value",
+     main = "Volcano Plot: CS vs Air")
+
+abline(v = 0, lty = 2)
+abline(h = -log10(0.1), lty = 2)
+```
+Red - upregulated genes
+Blue - Significantly downregulated genes
+Yellow - not statistically significant genes
+
+```{r}
+vsd = vst(dds, blind = FALSE)
+pcaData = plotPCA(vsd,
+                  intgroup = c("treatment", "donor"),
+                  returnData = TRUE)
+percentVar = round(100* attr(pcaData, "percentVar"))
+
+
+library(ggplot2)
+ggplot(pcaData, aes(
+  x = PC1,
+  y = PC2,
+  colour = treatment,
+  shape = donor
+))+
+  geom_point(size = 3)+
+  xlab(paste0("PC1: ", percentVar[1], "% varience"))+
+  ylab(paste0("PC2: ", percentVar[2], "% varience"))+
+  ggtitle("PCA: Cigarette Smoke vs Air")+
+  theme_classic()
+
+```
+clustering by primary donor rather than treatment - donor specific differences are a major source of variation in gene expression 
+
+Heatmap:
+```{r}
+if (!requireNamespace("pheatmap", quietly = TRUE)) {
+  install.packages("pheatmap")
+}
+
+library(pheatmap)
+```
+```{r}
+top_genes = head(rownames(res_ordered),50)
+
+heatmap_data = assay(vsd)[top_genes, ]
+heatmap_scaled = t(scale(t(heatmap_data)))
+
+annotation = as.data.frame(colData(vsd)[, c("treatment", "donor")])
+rownames(annotation) = colnames(heatmap_scaled)
+
+
+pheatmap(heatmap_scaled,
+         annotation_col = annotation,
+         show_rownames = FALSE,
+         main = "Top 50 Differently Expressed Genes")
+```
+higher expression in CS (red)
+air has a lower relative expression (blue) in the same genes 
+expression patterns differ between treatment groups 
+## DEG List
+```{r}
+write.csv(as.data.frame(res_sig),
+          "CS_vs_Air_significant_DEGs.csv")
+
+write.csv(as.data.frame(results), 
+          "CS_vs_Air_all_DEG_results.csv")
+
+```
+
+
+
+
