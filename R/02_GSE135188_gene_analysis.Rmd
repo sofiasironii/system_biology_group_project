@@ -127,7 +127,7 @@ Determining the most significant genes:
 res_ordered = results[order(results$padj), ]
 head(res_ordered, 10)
 
-res_sig = results[!is.na(results$padj) & results$padj < 0.1, ]
+res_sig = results[!is.na(results$padj) & results$padj < 0.05, ]
 dim(res_sig)
 ```
 
@@ -148,9 +148,9 @@ plotMA(results,
 plot(results$log2FoldChange, 
      -log10(results$padj),
      pch = 20,
-     col = ifelse(results$padj < 0.1 & results$log2FoldChange > 0, "deeppink4",
+     col = ifelse(results$padj < 0.05 & results$log2FoldChange > 0, "deeppink4",
                   
-                  ifelse(results$padj < 0.1 & results$log2FoldChange < 0, 
+                  ifelse(results$padj < 0.05 & results$log2FoldChange < 0, 
                          "cadetblue", "khaki2")),
      xlab = "Log2 Fold Change (CS vs Air)",
      ylab = "-Log10 Adjusted P-value",

@@ -1,0 +1,221 @@
+---
+title: "04_ORA"
+format: html
+---
+
+```{r}
+library(tidyverse)
+library(msigdbr)
+```
+
+al contrario della gsea qua usiamo solo i geni sotto una soglia tipo?
+
+## Load DEGs datasets
+
+```{r}
+#background
+res_135188 <- read_csv("../Data/CS_vs_Air_all_DEG_results.csv")
+res_135188 <-  res_135188 |> 
+  rename("...1"="gene_id")
+
+res_130967 <- read_rds("../Data/results_in_vivo_df.rds")
+
+
+
+deg_135188 <- read_csv("../Data/CS_vs_Air_all_DEG_results.csv")
+deg_135188 <- deg_135188 |> 
+  rename("...1"="gene_id")
+
+deg_135188_sig <- deg_135188 |>
+  filter(
+    !is.na(padj),
+    padj < 0.05,
+    abs(log2FoldChange) > 1
+  )
+
+deg_130967 <- read_rds("../Data/significant_genes_vivo.rds")
+
+deg_130967_sig <- deg_130967 |>
+  filter(
+    !is.na(padj),
+    padj < 0.05,
+    abs(log2FoldChange) > 1
+  )
+```
+
+Significant DEGs were selected from both datasets using an adjusted p-value threshold of 0.05 and a log2 fold change threshold of \|log2FC\| \> 1. The filtered gene lists were saved and used as input for the subsequent Over-Representation Analysis (ORA).
+
+## Check tables
+
+Before performing ORA, the structure of both DEG tables was checked to identify the gene identifier columns and ensure compatibility with the GO Biological Process gene sets.
+
+```{r}
+colnames(deg_135188_sig)
+colnames(deg_130967_sig)
+
+head(deg_135188_sig)
+head(deg_130967_sig)
+```
+
+## Gene lists and GO
+
+```{r}
+#same as GSEA
+bp_df <- msigdbr(
+  species = "Homo sapiens",
+  category = "C5",
+  subcategory = "GO:BP"
+)
+
+bp_list <- split(
+  bp_df$ensembl_gene,
+  bp_df$gs_name
+)
+```
+
+```{r}
+genes_135188 <- deg_135188_sig$gene_id
+
+genes_130967 <- deg_130967_sig$gene_id
+```
+
+```{r}
+sum(genes_135188 %in% unique(unlist(bp_list)))
+
+sum(genes_130967 %in% unique(unlist(bp_list)))
+```
+
+Following the application of the same DEG selection criteria, 872 genes from GSE135188 and 343 genes from GSE130967 overlapped with the GO Biological Process gene sets. These genes were retained for the subsequent ORA.
+
+## Background
+
+```{r}
+go_genes <- unique(unlist(bp_list))
+
+background_135188 <- intersect(
+  res_135188$gene_id[!is.na(res_135188$padj)],
+  go_genes
+)
+
+background_130967 <- intersect(
+  res_130967$gene_id[!is.na(res_130967$padj)],
+  go_genes
+)
+
+length(background_135188)
+length(background_130967)
+```
+
+The gene universe was defined separately for each dataset by including all genes with an available adjusted p-value in the DESeq2 results that were also annotated in the GO Biological Process collection.
+
+## Target
+
+The target gene lists were obtained by intersecting the significant DEGs with the corresponding background gene universe, retaining only genes annotated in GO Biological Process.
+
+```{r}
+ora_genes_135188 <- intersect(genes_135188, background_135188)
+ora_genes_130967 <- intersect(genes_130967, background_130967)
+
+length(ora_genes_135188)
+length(ora_genes_130967)
+```
+
+## ORA
+
+```{r}
+ora_135188 <- fora(
+  pathways = bp_list,
+  genes = ora_genes_135188,
+  universe = background_135188
+)
+
+ora_130967 <- fora(
+  pathways = bp_list,
+  genes = ora_genes_130967,
+  universe = background_130967
+)
+```
+
+ORA was performed separately for the in vitro and in vivo datasets using the `fora()` function from the fgsea package. The analysis tested whether GO Biological Process gene sets were overrepresented among significant DEGs compared with the corresponding background gene universe.
+
+## Relative risk
+
+```{r}
+#lecture function
+compute_enrichment <- function(ora, n_genes, n_universe) {
+  ora$relative_risk <- (ora$overlap / ora$size) /
+    (n_genes / n_universe)
+  return(ora)
+}
+```
+
+```{r}
+ora_135188 <- compute_enrichment(
+  ora_135188,
+  length(ora_genes_135188),
+  length(background_135188)
+)
+
+ora_130967 <- compute_enrichment(
+  ora_130967,
+  length(ora_genes_130967),
+  length(background_130967)
+)
+```
+
+To quantify the degree of overrepresentation, a relative risk (enrichment score) was calculated for each GO term. While the overlap indicates the number of significant DEGs belonging to a given pathway, it does not account for the size of the pathway or the proportion of significant genes in the overall background. The relative risk addresses this by comparing the proportion of DEGs within each GO term to the proportion of DEGs in the background gene universe. Values greater than 1 indicate overrepresentation, with higher values reflecting a stronger enrichment relative to the background.
+
+## Top 10 enriched GO terms
+
+The top 10 enriched GO Biological Process terms are selected for each dataset by ranking the ORA results according to adjusted p-value, using the raw p-value as a secondary criterion. This allowed the identification of the biological processes showing the strongest statistical evidence of overrepresentation among the significant DEGs.
+
+```{r}
+top10_135188 <- head(
+  ora_135188[order(ora_135188$padj, ora_135188$pval), ],
+  10
+)
+
+top10_130967 <- head(
+  ora_130967[order(ora_130967$padj, ora_130967$pval), ],
+  10
+)
+
+top10_135188
+```
+
+```{r}
+top10_130967
+```
+
+ORA results highlighted different biological processes in the two datasets. In GSE135188 (in vitro), enriched GO terms were mainly associated with epithelial cell differentiation, keratinization, cell adhesion and lipid metabolism, reflecting changes in processes related to the organization and function of airway epithelial cells. In contrast, GSE130967 (in vivo) showed enrichment primarily in xenobiotic metabolism and glucuronidation, suggesting an involvement of cellular mechanisms responsible for processing and eliminating foreign compounds.
+
+Overall, the results suggest differences between the transcriptional responses observed in experimentally exposed epithelial cells and those found in smokers.
+
+## Common GO processes
+
+The significant ORA results from the two datasets are compared to identify GO Biological Process terms that were consistently overrepresented among the DEGs in both the in vitro and in vivo conditions.
+
+```{r}
+sig_ora_135188 <- ora_135188 |>
+  filter(padj < 0.05)
+
+sig_ora_130967 <- ora_130967 |>
+  filter(padj < 0.05)
+
+common_ora <- intersect(
+  sig_ora_135188$pathway,
+  sig_ora_130967$pathway
+)
+
+length(common_ora)
+```
+
+A total of 53 GO Biological Process terms were significantly overrepresented in both datasets (adjusted p-value \< 0.05), suggesting that some biological processes are shared between the in vitro and in vivo responses to cigarette smoke exposure.
+
+```{r}
+common_ora
+```
+
+These terms mainly involve inflammatory and immune responses, lipid metabolism, xenobiotic metabolism and detoxification, and oxidative stress responses. In particular, the enrichment of processes related to inflammation, arachidonic acid metabolism and cellular detoxification suggests that these represent common biological components of the response to cigarette smoke exposure. Overall, these findings indicate that some biological responses observed in experimentally exposed epithelial cells are also present in smokers.
+
+## 
