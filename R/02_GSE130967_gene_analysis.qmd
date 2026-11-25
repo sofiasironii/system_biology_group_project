@@ -18,8 +18,8 @@ library(pheatmap)
 ```
 
 ```{r}
-gene_counts_vivo <- readRDS("Data/raw/data_in_vivo_gene.rds")
-metadata_vivo <- readRDS("Data/raw/metadata_in_vivo.rds")
+gene_counts_vivo <- readRDS("../Data/raw/data_in_vivo_gene.rds")
+metadata_vivo <- readRDS("../Data/raw/metadata_in_vivo.rds")
 ```
 
 ```{r}
@@ -122,6 +122,14 @@ length(intersect(signif_before, signif_adjusted))
 #### significantly differentially expressed genes
 
 ```{r}
+isoInfo <- read_rds(
+  paste0(
+    '/home/projects/22140/exam_data/',
+    'Homo_sapiens.GRCh38.107.chr_patch_hapl_scaff_tx_info.Rds'
+  )
+)
+
+
 gene_map <- isoInfo %>% dplyr::select(gene_id, gene_name) %>% distinct()
 res_dataframe <- as.data.frame(res_adjusted) %>% rownames_to_column("gene_id") %>% left_join(gene_map, by = "gene_id") %>% arrange(padj)
 degs <- res_dataframe %>% filter(!is.na(padj), padj < 0.05, abs(log2FoldChange) > 1)
@@ -163,6 +171,6 @@ pheatmap(mat_top, scale = "row", annotation_col = metadata_vivo_adjusted[, c("sm
 #### saving results
 
 ```{r}
-saveRDS(res_dataframe, file = "Data/raw/results_in_vivo_df.rds")
-saveRDS(degs, file = "Data/raw/significant_genes_vivo.rds")
+saveRDS(res_dataframe, file = "../Data/results_in_vivo_df.rds")
+saveRDS(degs, file = "../Data/significant_genes_vivo.rds")
 ```

@@ -4,17 +4,17 @@ editor_options:
     wrap: 72
 ---
 
-##Loading data and checking alignment
+## Loading data and checking alignment
 
 ```{r}
-metadata = readRDS('metadata_in_vitro.rds')
+metadata = readRDS('../Data/raw/metadata_in_vitro.rds')
 head(metadata)
 str(metadata)
 dim(metadata)
 ```
 
 ```{r}
-gene_counts = readRDS("data_in_vitro_gene.rds")
+gene_counts = readRDS("../Data/raw/data_in_vitro_gene.rds")
 dim(gene_counts)
 gene_counts[1:6, 1:6]
 head(colnames(gene_counts))
@@ -221,9 +221,9 @@ in the same genes expression patterns differ between treatment groups
 
 ```{r}
 write.csv(as.data.frame(res_sig),
-          "CS_vs_Air_significant_DEGs.csv")
+          "../Data/CS_vs_Air_significant_DEGs.csv")
 
 write.csv(as.data.frame(results), 
-          "CS_vs_Air_all_DEG_results.csv")
+          "../Data/CS_vs_Air_all_DEG_results.csv")
 
 ```
