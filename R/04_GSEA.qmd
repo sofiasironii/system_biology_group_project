@@ -15,7 +15,7 @@ library(fgsea)
 ```{r}
 res_135188 <- read_csv("../Data/CS_vs_Air_all_DEG_results.csv")
 res_135188 <-  res_135188 |> 
-  rename("...1"="gene_id")
+  rename("gene_id"="...1")
 
 res_130967 <- read_rds("../Data/results_in_vivo_df.rds")
 

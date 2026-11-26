@@ -6,6 +6,8 @@ format: html
 ```{r}
 library(tidyverse)
 library(msigdbr)
+library(fgsea)
+library(ggplot2)
 ```
 
 al contrario della gsea qua usiamo solo i geni sotto una soglia tipo?
@@ -16,15 +18,15 @@ al contrario della gsea qua usiamo solo i geni sotto una soglia tipo?
 #background
 res_135188 <- read_csv("../Data/CS_vs_Air_all_DEG_results.csv")
 res_135188 <-  res_135188 |> 
-  rename("...1"="gene_id")
+  rename("gene_id" = "...1")
 
 res_130967 <- read_rds("../Data/results_in_vivo_df.rds")
 
 
-
+#singificant genes
 deg_135188 <- read_csv("../Data/CS_vs_Air_all_DEG_results.csv")
 deg_135188 <- deg_135188 |> 
-  rename("...1"="gene_id")
+  rename("gene_id" = "...1")
 
 deg_135188_sig <- deg_135188 |>
   filter(
@@ -218,4 +220,108 @@ common_ora
 
 These terms mainly involve inflammatory and immune responses, lipid metabolism, xenobiotic metabolism and detoxification, and oxidative stress responses. In particular, the enrichment of processes related to inflammation, arachidonic acid metabolism and cellular detoxification suggests that these represent common biological components of the response to cigarette smoke exposure. Overall, these findings indicate that some biological responses observed in experimentally exposed epithelial cells are also present in smokers.
 
-## 
+### Dot plot of 10 most enriched common BP
+
+The 10 most significant GO terms shared between the two datasets are selected based on their adjusted p-values in the in vitro dataset. Their enrichment statistics were then compared across both datasets.
+
+```{r}
+common_ora_scores <- sig_ora_135188 |>
+  filter(pathway %in% common_ora) |>
+  select(pathway, padj) |>
+  rename(padj_135188 = padj) |>
+  inner_join(
+    sig_ora_130967 |>
+      filter(pathway %in% common_ora) |>
+      select(pathway, padj) |>
+      rename(padj_130967 = padj),
+    by = "pathway"
+  ) |>
+  mutate(
+    score_135188 = -log10(padj_135188),
+    score_130967 = -log10(padj_130967),
+    combined_score = (score_135188 + score_130967) / 2
+  ) |>
+  arrange(desc(combined_score))
+
+top10_common <- common_ora_scores |>
+  slice_head(n = 10)
+
+top10_common
+```
+
+The 10 most significant GO Biological Process (BP) terms shared between the two datasets were selected using a combined significance score. For each pathway, the negative log10-transformed adjusted p-values were calculated separately for the in vitro (GSE135188) and in vivo (GSE130967) datasets. The average of these two values was then used to rank the shared pathways, prioritizing those showing strong statistical significance in both datasets. The resulting top 10 pathways were selected for comparative visualization.
+
+```{r}
+ora_plot_data <- bind_rows(
+  sig_ora_135188 |>
+    filter(pathway %in% top10_common$pathway) |>
+    mutate(dataset = "In vitro (GSE135188)"),
+
+  sig_ora_130967 |>
+    filter(pathway %in% top10_common$pathway) |>
+    mutate(dataset = "In vivo (GSE130967)")
+) |>
+  mutate(
+    pathway = gsub("^GOBP_", "", pathway),
+    pathway = gsub("_", " ", pathway),
+    neg_log10_padj = -log10(padj)
+  )
+
+ora_plot_data <- ora_plot_data |>
+  mutate(
+    pathway = factor(
+      pathway,
+      levels = rev(gsub(
+        "_", " ",
+        gsub("^GOBP_", "", top10_common$pathway)
+      ))
+    )
+  )
+```
+
+```{r}
+library(stringr)
+library(scales)
+
+ora_plot_data <- ora_plot_data |>
+  mutate(pathway = str_to_sentence(pathway))
+
+# ordine asse y: RR medio tra i due dataset (i più alti in alto)
+ord <- ora_plot_data |>
+  group_by(pathway) |>
+  summarise(m = mean(relative_risk)) |>
+  arrange(m) |>
+  pull(pathway)
+
+ggplot(
+  ora_plot_data,
+  aes(
+    x = relative_risk,
+    y = factor(pathway, levels = ord),
+    size = overlap,
+    color = neg_log10_padj
+  )
+) +
+  geom_point(alpha = 0.85) +
+  facet_wrap(~ dataset) +
+  scale_y_discrete(labels = label_wrap(35)) +
+  scale_color_viridis_c(limits = c(0, 10), oob = squish) +
+  labs(
+    title = "Top 10 shared GO Biological Processes",
+    x = "Relative risk",
+    y = NULL,
+    size = "DEG overlap",
+    color = "-log10 adj. p-value"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.y = element_text(size = 9),
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  )
+```
+
+The dot plot compares the enrichment of the 10 most significant GO Biological Processes shared between the in vitro and in vivo datasets. Although all selected pathways were significantly enriched in both datasets, differences can be observed in their relative risk, gene overlap and statistical significance.
+
+In the in vitro dataset (GSE135188), pathways related to tissue development, biological adhesion and cell-cell signaling showed a relatively large gene overlap and high statistical significance. In contrast, the xenobiotic metabolic process was particularly enriched in the in vivo dataset (GSE130967), showing a substantially higher relative risk and statistical significance. Processes related to lipid metabolism, including arachidonic acid, icosanoid and unsaturated fatty acid metabolism, were also enriched in both datasets.
+
+Overall, these results suggest that cigarette smoke exposure is associated with shared biological responses in vitro and in vivo, particularly involving lipid metabolism and cellular processes. However, differences in enrichment patterns indicate that the in vitro model does not fully reproduce the transcriptional response observed in smokers. These findings highlight both common biological effects of cigarette smoke exposure and differences between the experimental model and the in vivo condition.
