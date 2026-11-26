@@ -1,0 +1,149 @@
+---
+title: "03_isoform_analysis"
+format: html
+---
+
+
+Loading packages and data
+```{r}
+# Load packages 
+library(tidyverse)
+library(DEXSeq)
+
+# Locate the shared data folder
+data_dir <- if (dir.exists("../Data/raw")) {
+  "../Data/raw"
+} else {
+  "Data/raw"
+}
+
+# Load GSE130967 isoform counts and metadata
+iso_vivo <- readRDS(
+  file.path(data_dir, "data_in_vivo_iso.rds")
+)
+
+meta_vivo <- readRDS(
+  file.path(data_dir, "metadata_in_vivo.rds")
+)
+
+# Inspect dimensions
+dim(iso_vivo)
+dim(meta_vivo)
+```
+
+```{r}
+
+# Check the current R environment
+R.version.string
+
+# Show available package libraries
+.libPaths()
+
+# Check whether DEXSeq is available
+requireNamespace("DEXSeq", quietly = TRUE)
+
+```
+
+Inspecting samples and metadata
+```{r}
+
+# Inspect isoform and sample identifiers
+head(rownames(iso_vivo))
+head(colnames(iso_vivo))
+
+# Inspect available metadata
+head(meta_vivo)
+str(meta_vivo)
+
+# Count samples in each smoking group
+table(meta_vivo$smoking)
+
+# Check the distribution of sex between groups
+table(meta_vivo$smoking, meta_vivo$sex)
+
+# Summarise age
+summary(meta_vivo$age)
+
+```
+
+Making sure data and metadata align - we should receive True at the end
+```{r}
+
+# Check whether every count-matrix sample
+# has a matching metadata entry
+all(colnames(iso_vivo) %in% rownames(meta_vivo))
+
+# Check for duplicated sample identifiers
+anyDuplicated(colnames(iso_vivo))
+anyDuplicated(rownames(meta_vivo))
+
+# Reorder metadata to match the count matrix
+meta_vivo <- meta_vivo[
+  colnames(iso_vivo), ,
+  drop = FALSE
+]
+
+# Verify exact alignment
+identical(
+  colnames(iso_vivo),
+  rownames(meta_vivo)
+)
+```
+
+Load gene-to-isoform annotation
+```{r}
+
+# Load the annotation data
+isoInfo <- readRDS(
+  paste0(
+    "/home/projects/22140/exam_data/",
+    "Homo_sapiens.GRCh38.107.chr_patch_hapl_scaff_tx_info.Rds"
+  )
+)
+
+# Inspect annotation structure
+dim(isoInfo)
+colnames(isoInfo)
+head(isoInfo)
+
+# Match isoforms to their genes
+tx_info <- isoInfo[
+  match(rownames(iso_vivo), isoInfo$transcript_id),
+  c("transcript_id", "gene_id")
+]
+
+# Check whether any isoforms lack a gene mapping
+sum(is.na(tx_info$gene_id))
+
+# Inspect the matched annotations
+head(tx_info)
+
+```
+
+Preparing sample metadata
+
+```{r}
+
+# Confirm that sample IDs are correctly aligned
+stopifnot(all(colnames(iso_vivo) == rownames(meta_vivo)))
+
+# Create a sample identifier for DEXSeq
+meta_vivo$sample <- factor(rownames(meta_vivo))
+
+# Set nonsmokers as the reference group
+meta_vivo$smoking <- relevel(
+  factor(meta_vivo$smoking),
+  ref = "nonsmoker"
+)
+
+# Ensure sex is a factor
+meta_vivo$sex <- factor(meta_vivo$sex)
+
+# Standardise age for the statistical model
+meta_vivo$age_scaled <- as.numeric(scale(meta_vivo$age))
+
+# Inspect the prepared metadata
+head(meta_vivo)
+str(meta_vivo)
+```
+
