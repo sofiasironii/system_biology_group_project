@@ -62,6 +62,8 @@ plotPCA(vsd, intgroup = c("smoking", "sex")) +
   labs(title = "PCA by Smoking and Sex") +
   scale_color_manual(values = c("maroon", "navy", "pink", "#007fff")) +
   theme_minimal(base_size = 13)
+
+#result: gender separates samples as much as smoking does -> if we didn't correct for confounders, part of the smoking effect could actually be gender effect
 ```
 
 ```{r}
@@ -82,6 +84,8 @@ plotPCA(vsd, intgroup = c("smoking", "age_group")) +
   scale_color_manual(values = age_smoke_colors) +
   labs(title = "PCA by Smoking and Age", color = "Group : Age") +
   theme_minimal(base_size = 13)
+
+#result: age is a weak confounder because almost all samples are under 45 years old, only one is over 60 and there's no visible clustering in the plot
 ```
 
 #### DESeq2 -\> before and after correcting for confounders
@@ -116,7 +120,10 @@ res_adjusted <- results(dds_adjusted, contrast = c("smoking", "smoker", "nonsmok
 #confronting DESeq befor and after correcting for confounders
 signif_before <- rownames(res_before)[!is.na(res_before$padj) & res_before$padj < 0.05]
 signif_adjusted <- rownames(res_adjusted)[!is.na(res_adjusted$padj) & res_adjusted$padj < 0.05]
+length(signif_before)
+length(signif_adjusted)
 length(intersect(signif_before, signif_adjusted))
+#result: the base model identifies 5040 significant genes, the model adjusted for sex and age identifies 4586 and 3868 are shared between the two models -> most of the smoking effect remains after correction, however, 1172 genes aren't significant anymore after adjusting for sex and age: since the two groups differ significantly in sex composition, part of the base model signal was probably driven by sex
 ```
 
 #### significantly differentially expressed genes
@@ -139,13 +146,15 @@ degs <- res_dataframe %>% filter(!is.na(padj), padj < 0.05, abs(log2FoldChange) 
 nrow(degs) #total number of significant genes
 sum(degs$log2FoldChange > 0) #number of significant genes with a positive log2FoldChange
 sum(degs$log2FoldChange < 0) #number of significant genes with a negative log2FoldChange
+
+#result: we get 704 significantly differentially expressed genes, 474 up-regulated in smokers, 230 down-regulated
 ```
 
 #### volcano plots and heatmaps
 
 ```{r}
-volcano_dataframe <- res_dataframe %>% filter(!is.na(padj)) %>% mutate(status = case_when(padj < 0.05 & log2FoldChange >  1 ~ "Up in Smokers", padj < 0.05 & log2FoldChange < -1 ~ "Down in Smokers", TRUE ~ "Non Smokers"), mlog10padj = -log10(padj))
-to_label <- volcano_dataframe %>% filter(status != "Non Smokers", !is.na(gene_name)) %>% slice_head(n = 10)
+volcano_dataframe <- res_dataframe %>% filter(!is.na(padj)) %>% mutate(status = case_when(padj < 0.05 & log2FoldChange >  1 ~ "Up in Smokers", padj < 0.05 & log2FoldChange < -1 ~ "Down in Smokers", TRUE ~ "n.s."), mlog10padj = -log10(padj))
+to_label <- volcano_dataframe %>% filter(status != "n.s.", !is.na(gene_name)) %>% slice_head(n = 10)
 ggplot(volcano_dataframe, aes(x = log2FoldChange, y = mlog10padj, color = status)) +
   geom_point(alpha = 0.75) +
   geom_hline(yintercept = -log10(0.05), linetype = 2) +
@@ -154,6 +163,8 @@ ggplot(volcano_dataframe, aes(x = log2FoldChange, y = mlog10padj, color = status
   scale_color_manual(values = c("Down in Smokers" = "blue", "n.s." = "grey", "Up in Smokers" = "pink")) +
   labs(x = "log2 Fold Change", y = "-log10(padj)", color = "Status", title = "Volcano Plot: Smokers vs Non-smokers") +
   theme_minimal(base_size = 13)
+
+#result: the top genes are all much higher in smokers (AKR1C2, ADH7, CYP1B1..)
 ```
 
 ```{r}
@@ -166,6 +177,7 @@ rownames(mat_top) <- degs$gene_name[match(top_ids, degs$gene_id)]
 ```{r}
 pheatmap(mat_top, scale = "row", annotation_col = metadata_vivo_adjusted[, c("smoking", "sex", "age")], show_colnames = FALSE, fontsize_row = 9, main = "Top 30 DEGs"
 )
+#result: shows the top 30 most significantly differentially expressed genes -> every one of them is up regulated in smokers, except LYPD2 that's down regulated
 ```
 
 #### saving results
