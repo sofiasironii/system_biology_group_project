@@ -1,0 +1,317 @@
+---
+title: "04_Functional_Analysis"
+format: html
+editor: visual
+---
+
+## Load datasets from previous analysis
+
+```{r}
+library(tidyverse)
+library(msigdbr)
+library(fgsea)
+```
+
+```{r}
+res_135188 <- read_csv("../Data/CS_vs_Air_all_DEG_results.csv")
+res_135188 <-  res_135188 |> 
+  rename("gene_id"="...1")
+
+res_130967 <- read_rds("../Data/results_in_vivo_df.rds")
+
+```
+
+## check data
+
+I check: the strcture of the datasets, whether there are missing values and the if the ensemble formats are equal.
+
+```{r}
+# Check dimensions
+dim(res_135188)
+dim(res_130967)
+
+# Check column names
+colnames(res_135188)
+colnames(res_130967)
+
+# Inspect the first rows (Ensembls)
+head(res_135188)
+head(res_130967)
+
+#NAs
+colSums(is.na(res_135188))
+colSums(is.na(res_130967))
+
+#Ensembl check
+head(res_135188$gene_id)
+head(res_130967$gene_id)
+```
+
+I also check if the genes are unique and if there are infinite or non numeric values
+
+```{r}
+sum(duplicated(res_135188$gene_id))
+sum(duplicated(res_130967$gene_id))
+
+sum(!is.finite(res_135188$stat))
+sum(!is.finite(res_130967$stat))
+```
+
+```{r}
+summary(res_135188$stat)
+summary(res_130967$stat)
+
+```
+
+The distribution of the Wald statistics is relatively similar between the two datasets, with values both above and below zero. Both distributions have medians close to zero (−0.14 and −0.01, respectively), suggesting that most genes show relatively weak evidence of differential expression.
+
+Both datasets contain genes with strong positive and negative statistics, indicating evidence of differential expression in both directions.
+
+These results suggest that both datasets contain potentially relevant transcriptional changes that can be investigated using GSEA. However, the direction of the statistics must be interpreted according to the contrast definition used in each DESeq2 analysis.
+
+## Create rank gene lists
+
+The ranked gene lists are generated using the statistics obtained from DESeq2. First, the `stat` column is extracted from each DESeq2 results table, containing the Wald statistic for every gene. The corresponding Ensembl gene IDs are then assigned as names to these values, ensuring that each statistic remains associated with its respective gene.
+
+Finally, the lists are sorted in decreasing order, from the highest positive to the lowest negative Wald statistic. This produces a ranked list containing all genes, regardless of their individual statistical significance, which will be used as input for Gene Set Enrichment Analysis (GSEA).
+
+```{r}
+# GSE135188
+gene_list_135188 <- res_135188$stat
+names(gene_list_135188) <- res_135188$gene_id
+
+gene_list_135188 <- sort(gene_list_135188, decreasing = TRUE)
+
+
+# GSE130967
+gene_list_130967 <- res_130967$stat
+names(gene_list_130967) <- res_130967$gene_id
+
+gene_list_130967 <- sort(gene_list_130967, decreasing = TRUE)
+```
+
+## **Retrieve GO Biological Process gene sets**
+
+Using msigdbr package I download the GO information about biological processes in human. These gene sets will be used to investigate which biological processes are enriched in the ranked gene lists.
+
+```{r}
+bp_df <- msigdbr(
+  species = "Homo sapiens",
+  category = "C5",
+  subcategory = "GO:BP"
+)
+
+#check that the ensembl format is the same of the res datasets
+head(bp_df$ensembl_gene)
+```
+
+`fgsea` needs a list where each element represents BP term and contains the Ensembl gene IDs associated with that biological process.
+
+```{r}
+bp_list <- split(
+  bp_df$ensembl_gene,
+  bp_df$gs_name
+)
+```
+
+I assessed the overlap between the ranked gene lists and the GO Biological Process gene sets to verify that a sufficient number of genes could be used for enrichment analysis.
+
+```{r}
+# GSE135188
+sum(names(gene_list_135188) %in% unique(unlist(bp_list)))
+
+# GSE130967
+sum(names(gene_list_130967) %in% unique(unlist(bp_list)))
+
+summary(lengths(bp_list))
+```
+
+I also examined the distribution of gene set sizes to understand their variability and identify potential size constraints for GSEA.
+
+## GSEA
+
+GSEA was performed using the fgseaMultilevel function. GO Biological Process gene sets were used as pathways, while genes were ranked according to their DESeq2 Wald statistics. Gene sets containing fewer than 15 or more than 500 genes were excluded. The standard scoring scheme was used to perform two-sided enrichment analysis.
+
+```{r}
+# GSEA - GSE135188
+fgsea_135188 <- fgseaMultilevel(
+  pathways = bp_list,
+  stats = gene_list_135188,
+  minSize = 15,
+  maxSize = 500,
+  scoreType = "std"
+)
+
+# GSEA - GSE130967
+fgsea_130967 <- fgseaMultilevel(
+  pathways = bp_list,
+  stats = gene_list_130967,
+  minSize = 15,
+  maxSize = 500,
+  scoreType = "std"
+)
+```
+
+I check the results
+
+```{r}
+# Number of pathways
+nrow(fgsea_135188)
+nrow(fgsea_130967)
+
+# Significant pathways
+sum(fgsea_135188$padj < 0.05, na.rm = TRUE)
+sum(fgsea_130967$padj < 0.05, na.rm = TRUE)
+```
+
+A total of 2,545 GO Biological Process pathways were significantly enriched in GSE135188, compared with 1,685 in GSE130967, using an adjusted p-value threshold of 0.05. These results provide the basis for identifying biological processes shared between in vitro cigarette smoke exposure and in vivo smoking.
+
+## Identify pathways
+
+```{r}
+# Top 10 pathways - GSE135188
+fgsea_135188 |> 
+  arrange(padj) |> 
+  select(pathway, NES, pval, padj, size) |> 
+  head(10)
+
+# Top 10 pathways - GSE130967
+fgsea_130967 |> 
+  arrange(padj) |> 
+  select(pathway, NES, pval, padj, size) |> 
+  head(10)
+```
+
+By looking at the 2 tables, several pathways are shared between the in vitro (GSE135188) and in vivo (GSE130967) analyses, including cellular respiration, Golgi vesicle transport, ribosome biogenesis, proteasome-mediated protein catabolism, and protein localization to organelles.
+
+These shared pathways suggest that cigarette smoke exposure in vitro and smoking in vivo are associated with overlapping changes in cellular processes, particularly energy metabolism, protein synthesis and degradation, and intracellular protein transport. However, the two datasets also showed differences in their top enriched pathways, potentially reflecting differences between the experimental in vitro model and the biological complexity of human airway tissue.
+
+## Find the most significantly shared enriched pathway
+
+First, significantly enriched pathways were extracted from both GSEA analyses using an adjusted p-value threshold of 0.05. The `intersect()` function was then used to identify pathways that were significantly enriched in both datasets, resulting in 1,485 shared pathways.
+
+```{r}
+# Extract significant pathways from both gsea
+sig_135188 <- fgsea_135188 |> 
+  filter(padj < 0.05)
+
+sig_130967 <- fgsea_130967 |> 
+  filter(padj < 0.05)
+
+# Identify shared pathways
+common_pathways <- intersect(
+  sig_135188$pathway,
+  sig_130967$pathway
+)
+
+length(common_pathways) # 1485 shared pathways
+
+
+# Select the most significant shared pathway
+top_common <- sig_135188 |>
+  filter(pathway %in% common_pathways) |>
+  arrange(padj)
+
+# Extract the first pathway
+chosen_pathway <- top_common$pathway[1]
+
+chosen_pathway
+```
+
+To select one pathway for further investigation, the shared pathways were filtered from the in vitro dataset (GSE135188) and ranked according to their adjusted p-values. The pathway with the lowest adjusted p-value was selected as the most significant shared pathway.
+
+## Enrichment plot of `GOBP_CELLULAR_RESPIRATION`
+
+```{r}
+sig_135188 |>
+  filter(pathway == "GOBP_CELLULAR_RESPIRATION") |>
+  select(pathway, NES, pval, padj)
+
+sig_130967 |>
+  filter(pathway == "GOBP_CELLULAR_RESPIRATION") |>
+  select(pathway, NES, pval, padj)
+```
+
+The GO Biological Process pathway **GOBP_CELLULAR_RESPIRATION** was significantly enriched in both datasets. The DESeq2 contrasts were consistent in terms of direction: CS versus Air in the in vitro dataset (GSE135188) and Smokers versus Non-smokers in the in vivo dataset (GSE130967). Therefore, positive Wald statistics correspond to cigarette smoke exposure in both analyses.
+
+The normalized enrichment score (NES) was positive in both the in vitro (NES = 2.97, adjusted p-value = 1.02 × 10⁻⁴⁰) and in vivo (NES = 2.57, adjusted p-value = 3.82 × 10⁻²⁴) datasets, indicating enrichment of cellular respiration-related genes towards the smoke-exposed conditions. The higher NES in the in vitro dataset suggests a stronger enrichment signal compared with the in vivo dataset.
+
+## Enrichment plots
+
+Enrichment plots are generated for the shared pathway GOBP_CELLULAR_RESPIRATION in both datasets. These plots illustrate the distribution of pathway-associated genes across the ranked gene lists and provide a visual representation of the enrichment signal.
+
+### GSE135188 (in vitro)
+
+```{r}
+plotEnrichment(
+  bp_list[["GOBP_CELLULAR_RESPIRATION"]],
+  gene_list_135188
+) +
+  ggplot2::labs(
+    title = "GSE135188 - Cellular respiration"
+  )
+```
+
+### **GSE130967 (in vivo)**
+
+```{r}
+plotEnrichment(
+  bp_list[["GOBP_CELLULAR_RESPIRATION"]],
+  gene_list_130967
+) +
+  ggplot2::labs(
+    title = "GSE130967 - Cellular respiration"
+  )
+```
+
+The enrichment plots showed a similar pattern in both datasets. In both cases, the running enrichment score increased rapidly at the beginning of the ranked gene lists, indicating that genes associated with cellular respiration were predominantly concentrated among genes positively associated with cigarette smoke exposure. This visual observation supports the positive NES values obtained in both analyses, suggesting that the cellular respiration pathway is consistently enriched in vitro and in vivo.
+
+## **Leading-edge Gene Analysis**
+
+```{r}
+leading_135188 <- fgsea_135188 |>
+  filter(pathway == "GOBP_CELLULAR_RESPIRATION") |>
+  pull(leadingEdge)
+
+# Extract the first three leading-edge genes
+head(leading_135188[[1]], 3)
+```
+
+```{r}
+leading_130967 <- fgsea_130967 |>
+  filter(pathway == "GOBP_CELLULAR_RESPIRATION") |>
+  pull(leadingEdge)
+
+head(leading_130967[[1]], 3)
+```
+
+The first three leading-edge genes contributing to the enrichment of the GOBP_CELLULAR_RESPIRATION pathway were extracted from both datasets. Their overlap was then examined to identify genes consistently involved in the enrichment signal in both the in vitro and in vivo analyses. One gene (ENSG00000042286) was shared between the two datasets, suggesting a common contribution to the cellular respiration enrichment associated with cigarette smoke exposure.
+
+## Save data
+
+```{r}
+fgsea_135188_export <- fgsea_135188 |>
+  mutate(leadingEdge = sapply(leadingEdge, paste, collapse = ";"))
+
+write.csv(
+  fgsea_135188_export,
+  "../Data/04_fgsea_135188.csv",
+  row.names = FALSE
+)
+
+
+fgsea_130967_export <- fgsea_130967 |>
+  mutate(leadingEdge = sapply(leadingEdge, paste, collapse = ";"))
+
+write.csv(
+  fgsea_130967_export,
+  "../Data/04_fgsea_130967.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  data.frame(pathway = common_pathways),
+  "../Data/04_common_pathways.csv",
+  row.names = FALSE
+)
+```
