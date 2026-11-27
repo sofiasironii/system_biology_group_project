@@ -3,147 +3,262 @@ title: "03_isoform_analysis"
 format: html
 ---
 
+## Isoform-level analysis
 
-Loading packages and data
+### Settings: group's objects (from 01_load_data.qmd)
+
 ```{r}
-# Load packages 
-library(tidyverse)
 library(DEXSeq)
+library(DESeq2)
+library(tidyverse)
+options(bitmapType = "cairo")   # plots on server without a screen
 
-# Locate the shared data folder
-data_dir <- if (dir.exists("../Data/raw")) {
-  "../Data/raw"
-} else {
-  "Data/raw"
+alpha     <- 0.05
+dIFcutoff <- 0.1    # isoform switch = FDR < 0.05 and |dIF| > 0.1 (Vitting-Seerup et al. 2017)
+outDir    <- here::here("results", "person3")
+dir.create(outDir, showWarnings = FALSE, recursive = TRUE)
+
+inVitro <- list(name = "GSE135188",
+                counts = isoform_count1,        # isoform counts
+                meta = metadata_in_vitro_1,     # metadata
+                conditionCol = "treatment",     # column with CS / air
+                covariate = "donor",            # same donor in both conditions
+                paired = TRUE)
+
+inVivo  <- list(name = "GSE130967",
+                counts = isoform_count2,
+                meta = metadata_in_vivo_1,      # use the same samples as Person 2
+                conditionCol = "smoking",       # smoker / nonsmoker
+                covariate = NULL,               # e.g. "sex" if that column exists
+                paired = FALSE)
+
+if (!exists("isoInfo")) {
+  isoInfo <- read_rds(paste0('/home/projects/22140/exam_data/',
+                             'Homo_sapiens.GRCh38.107.chr_patch_hapl_scaff_tx_info.Rds'))
 }
-
-# Load GSE130967 isoform counts and metadata
-iso_vivo <- readRDS(
-  file.path(data_dir, "data_in_vivo_iso.rds")
-)
-
-meta_vivo <- readRDS(
-  file.path(data_dir, "metadata_in_vivo.rds")
-)
-
-# Inspect dimensions
-dim(iso_vivo)
-dim(meta_vivo)
+isoInfo <- as.data.frame(isoInfo)
+if (!"isoform_id" %in% colnames(isoInfo)) isoInfo$isoform_id <- isoInfo$transcript_id
+if (!"gene_name"  %in% colnames(isoInfo)) isoInfo$gene_name  <- isoInfo$gene_id
 ```
+
+### Helper: line up counts and metadata
+
+```{r prep}
+prepData <- function(d) {
+  counts <- as.data.frame(d$counts)
+  idCol <- intersect(c("isoform_id", "transcript_id"), colnames(counts))
+  if (length(idCol)) { rownames(counts) <- counts[[idCol[1]]]; counts[[idCol[1]]] <- NULL }
+
+  meta <- as.data.frame(d$meta)
+  # find the metadata column that holds the sample names of the count matrix
+  hits <- sapply(meta, function(x) sum(as.character(x) %in% colnames(counts)))
+  if (length(hits) && max(hits) > 0) {
+    meta$sample_id <- as.character(meta[[names(which.max(hits))]])
+  } else if (any(rownames(meta) %in% colnames(counts))) {
+    meta$sample_id <- rownames(meta)
+  } else stop(d$name, ": no metadata column matches the sample names of the counts")
+  meta <- meta[meta$sample_id %in% colnames(counts), ]
+
+  for (col in c(d$conditionCol, d$covariate)) if (!col %in% colnames(meta))
+    stop(d$name, ": column '", col, "' not in metadata. Columns are: ",
+         paste(colnames(meta), collapse = ", "))
+
+  # condition: control (air / non-smoker) as reference level
+  lv <- unique(as.character(meta[[d$conditionCol]]))
+  if (length(lv) != 2) stop(d$name, ": '", d$conditionCol, "' has ", length(lv),
+                            " groups (", paste(lv, collapse = ", "), "), need exactly 2")
+  ref <- lv[grepl("air|non|control|ctrl|never", lv, ignore.case = TRUE)][1]
+  if (is.na(ref)) ref <- lv[1]
+  meta$condition <- factor(meta[[d$conditionCol]], levels = c(ref, setdiff(lv, ref)))
+  meta$cov <- if (is.null(d$covariate)) NA else factor(meta[[d$covariate]])
+  cat(d$name, ": reference =", levels(meta$condition)[1],
+      ", case =", levels(meta$condition)[2], "\n")
+  if (is.null(d$covariate)) print(table(meta$condition)) else print(table(meta$condition, meta$cov))
+
+  counts <- round(as.matrix(counts[, meta$sample_id]))
+  list(counts = counts, meta = meta)
+}
+```
+
+### Main analysis (one function, run on both datasets)
+
+```{r function}
+runIsoformAnalysis <- function(d) {
+  name <- d$name
+  x <- prepData(d); isoCounts <- x$counts; meta <- x$meta
+  ref <- levels(meta$condition)[1]; case <- levels(meta$condition)[2]
+  hasCov <- !is.null(d$covariate)
+
+  ## ---- Filtering: >= 10 reads in >= 3 samples, genes with >= 2 isoforms ----
+  txInfo <- isoInfo[match(rownames(isoCounts), isoInfo$isoform_id), ]
+  geneCounts <- rowsum(isoCounts[!is.na(txInfo$gene_id), ],
+                       txInfo$gene_id[!is.na(txInfo$gene_id)])   # for DESeq2 below
+  keep <- !is.na(txInfo$gene_id) & rowSums(isoCounts >= 10) >= 3
+  isoCounts <- isoCounts[keep, ]; txInfo <- txInfo[keep, ]
+  multiIso <- txInfo$gene_id %in% names(which(table(txInfo$gene_id) >= 2))
+  isoCounts <- isoCounts[multiIso, ]; txInfo <- txInfo[multiIso, ]
+  cat(name, ":", nrow(isoCounts), "isoforms in", length(unique(txInfo$gene_id)), "genes tested\n")
+
+  ## ---- QC: isoform-level PCA (condition vs donor) ---------------------------
+  vsd <- vst(DESeqDataSetFromMatrix(isoCounts, meta, design = ~ 1), blind = TRUE)
+  p <- plotPCA(vsd, intgroup = if (hasCov) c("condition", "cov") else "condition",
+               returnData = TRUE)
+  pv <- round(100 * attr(p, "percentVar"))
+  pcaPlot <- ggplot(p, aes(PC1, PC2, colour = condition)) +
+    { if (hasCov) geom_point(aes(shape = cov), size = 3) else geom_point(size = 3) } +
+    labs(x = paste0("PC1 (", pv[1], "%)"), y = paste0("PC2 (", pv[2], "%)"),
+         shape = d$covariate, title = paste(name, "- isoform-level PCA")) +
+    theme_minimal()
+  print(pcaPlot)
+  ggsave(file.path(outDir, paste0(name, "_isoform_PCA.png")), pcaPlot, width = 6, height = 5, bg = "white")
+
+  ## DEXSeq 
+  covTerm  <- if (hasCov) " + cov:exon" else ""
+  fullF    <- as.formula(paste0("~ sample + exon + condition:exon", covTerm))
+  reducedF <- as.formula(paste0("~ sample + exon", covTerm))
+  sampleData <- data.frame(condition = meta$condition, row.names = meta$sample_id)
+  if (hasCov) sampleData$cov <- meta$cov
+
+  dxd <- DEXSeqDataSet(countData = isoCounts, sampleData = sampleData, design = fullF,
+                       featureID = txInfo$isoform_id, groupID = txInfo$gene_id)
+  dxd <- estimateSizeFactors(dxd)
+  dxd <- estimateDispersions(dxd)
+  dxd <- testForDEU(dxd, fullModel = fullF, reducedModel = reducedF)
+  dxd <- estimateExonFoldChanges(dxd, fitExpToVar = "condition")
+  dexseqResult <- DEXSeqResults(dxd)
+  saveRDS(dexseqResult, file.path(outDir, paste0(name, "_dexseqResult.rds")))
+
+  sigIso <- dexseqResult[!is.na(dexseqResult$padj) & dexseqResult$padj < alpha, ]
+  cat("Significant isoforms:", nrow(sigIso), " genes:", length(unique(sigIso$groupID)), "\n")
+
+  ## Isoform fraction (IF) and dIF 
+  geneTot <- rowsum(isoCounts, txInfo$gene_id)[txInfo$gene_id, ]
+  IF <- isoCounts / geneTot
+  if (d$paired) {   # mean over donors of the within-donor difference
+    dIF <- rowMeans(sapply(levels(meta$cov), function(dn)
+      rowMeans(IF[, meta$cov == dn & meta$condition == case, drop = FALSE]) -
+      rowMeans(IF[, meta$cov == dn & meta$condition == ref,  drop = FALSE])), na.rm = TRUE)
+  } else {
+    dIF <- rowMeans(IF[, meta$condition == case], na.rm = TRUE) -
+           rowMeans(IF[, meta$condition == ref],  na.rm = TRUE)
+  }
+
+  isoRes <- as.data.frame(dexseqResult) %>% as_tibble() %>%
+    dplyr::select(gene_id = groupID, isoform_id = featureID, stat, pvalue, padj) %>%
+    mutate(dIF = dIF[isoform_id],
+           switching = !is.na(padj) & padj < alpha & abs(dIF) > dIFcutoff) %>%
+    left_join(isoInfo %>% distinct(gene_id, .keep_all = TRUE) %>% dplyr::select(gene_id, gene_name),
+              by = "gene_id")
+
+  ## Isoform switches
+  # gene with a switching isoform AND another isoform moving the opposite way
+  switches <- isoRes %>% group_by(gene_id) %>%
+    filter(any(switching), any(dIF > dIFcutoff), any(dIF < -dIFcutoff)) %>%
+    ungroup() %>% filter(abs(dIF) > dIFcutoff) %>% arrange(gene_id, desc(dIF))
+  cat("Switching isoforms:", sum(isoRes$switching),
+      " genes with an isoform switch:", length(unique(switches$gene_id)), "\n")
+  write_csv(switches, file.path(outDir, paste0(name, "_isoform_switches.csv")))
+
+  volcano <- ggplot(isoRes %>% filter(!is.na(padj)), aes(dIF, -log10(padj), colour = switching)) +
+    geom_point(size = 0.7) +
+    geom_vline(xintercept = c(-dIFcutoff, dIFcutoff), linetype = 2) +
+    geom_hline(yintercept = -log10(alpha), linetype = 2) +
+    scale_colour_manual(values = c("grey70", "firebrick")) +
+    labs(x = paste0("dIF (", case, " - ", ref, ")"), y = "-log10(FDR)", colour = "Switch",
+         title = paste(name, "- differential isoform usage")) +
+    theme_minimal()
+  print(volcano)
+  ggsave(file.path(outDir, paste0(name, "_volcano.png")), volcano, width = 6, height = 5, bg = "white")
+
+  # IF per sample for the 4 most significant switch genes
+  topGenes <- switches %>% arrange(padj) %>% distinct(gene_id) %>% head(4) %>% pull(gene_id)
+  if (length(topGenes)) {
+    plotDf <- as.data.frame(IF[txInfo$gene_id %in% topGenes, , drop = FALSE]) %>%
+      rownames_to_column("isoform_id") %>%
+      pivot_longer(-isoform_id, names_to = "sample_id", values_to = "IF") %>%
+      left_join(isoRes %>% dplyr::select(isoform_id, gene_name), by = "isoform_id") %>%
+      left_join(meta %>% dplyr::select(sample_id, condition), by = "sample_id")
+    topPlot <- ggplot(plotDf, aes(isoform_id, IF, fill = condition)) +
+      geom_boxplot(outlier.shape = NA) +
+      geom_point(position = position_jitterdodge(jitter.width = 0.1), size = 0.7) +
+      facet_wrap(~ gene_name, scales = "free_x") +
+      labs(x = NULL, y = "Isoform fraction (IF)", title = paste(name, "- top isoform switches")) +
+      theme_minimal() + theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 7))
+    print(topPlot)
+    ggsave(file.path(outDir, paste0(name, "_top_switches.png")), topPlot, width = 9, height = 6, bg = "white")
+  }
+
+  ## ---- Gene-level summary (exercise code) ----------------------------------
+  dexseqResultGene <- isoRes %>% filter(!is.na(stat)) %>%
+    group_by(gene_id) %>% slice_min(order_by = pvalue, n = 1, with_ties = FALSE) %>%
+    ungroup() %>% mutate(padj = p.adjust(pvalue, method = "fdr"))
+
+  ## Gene-level DESeq2 with the same design, then compare (exercise code)
+  geneCounts <- geneCounts[rowSums(geneCounts >= 10) >= 3, ]
+  dds <- DESeqDataSetFromMatrix(geneCounts, meta,
+                                design = if (hasCov) ~ cov + condition else ~ condition)
+  deseq2Res <- as.data.frame(results(DESeq(dds, quiet = TRUE),
+                                     contrast = c("condition", case, ref))) %>%
+    rownames_to_column("gene_id")
+
+  both <- inner_join(
+    dexseqResultGene %>% transmute(gene_id, pvalue_dexseq = pvalue, dex_sig = padj < alpha),
+    deseq2Res %>% transmute(gene_id, pvalue_deseq2 = pvalue, deseq_sig = !is.na(padj) & padj < alpha),
+    by = "gene_id")
+  contigTab <- table(DEXSeq = both$dex_sig, DESeq2 = both$deseq_sig)
+  print(contigTab)
+  print(fisher.test(contigTab, alternative = "greater"))
+  cat("Isoform-usage-only genes (missed by DESeq2):", sum(both$dex_sig & !both$deseq_sig), "\n")
+
+  # For Person 5 (same format as jointDiffRes in week 7)
+  write_csv(both %>% dplyr::select(gene_id, pvalue_deseq2, pvalue_dexseq),
+            file.path(outDir, paste0(name, "_jointDiffRes.csv")))
+
+  list(gene = dexseqResultGene, iso = isoRes, switches = switches)
+}
+```
+
+### Run both datasets (this can be very slow)
+
+```{r run}
+resInVitro <- runIsoformAnalysis(inVitro)
+resInVivo  <- runIsoformAnalysis(inVivo)
+```
+
+### In vitro vs smokers
 
 ```{r}
+# 1) Same genes? ORA on the genes tested in both datasets
+cmp <- inner_join(resInVitro$gene %>% transmute(gene_id, sigInVitro = padj < alpha),
+                  resInVivo$gene  %>% transmute(gene_id, sigInVivo  = padj < alpha),
+                  by = "gene_id")
+crossTab <- table(InVitro = cmp$sigInVitro, InVivo = cmp$sigInVivo)
+print(crossTab)
+print(fisher.test(crossTab, alternative = "greater"))
 
-# Check the current R environment
-R.version.string
+# 2) Same direction? For isoforms switching in vitro, does usage move the same way in smokers?
+isoCmp <- inner_join(
+  resInVitro$iso %>% dplyr::select(isoform_id, gene_name, dIF_vitro = dIF, switch_vitro = switching),
+  resInVivo$iso  %>% dplyr::select(isoform_id, dIF_vivo = dIF, switch_vivo = switching),
+  by = "isoform_id")
+swVitro <- isoCmp %>% filter(switch_vitro, !is.na(dIF_vivo))
+nSame <- sum(sign(swVitro$dIF_vitro) == sign(swVitro$dIF_vivo))
+cat("In vitro switching isoforms changing in the same direction in smokers:",
+    nSame, "of", nrow(swVitro), "\n")
+if (nrow(swVitro)) print(binom.test(nSame, nrow(swVitro), p = 0.5, alternative = "greater"))
 
-# Show available package libraries
-.libPaths()
+# 3) Switches found in both datasets, same direction
+sharedSwitches <- isoCmp %>% filter(switch_vitro, switch_vivo, sign(dIF_vitro) == sign(dIF_vivo))
+print(sharedSwitches)
+write_csv(sharedSwitches, file.path(outDir, "shared_switches_invitro_invivo.csv"))
 
-# Check whether DEXSeq is available
-requireNamespace("DEXSeq", quietly = TRUE)
-
+dIFplot <- ggplot(isoCmp, aes(dIF_vitro, dIF_vivo, colour = switch_vitro & switch_vivo)) +
+  geom_hline(yintercept = 0, colour = "grey60") + geom_vline(xintercept = 0, colour = "grey60") +
+  geom_point(size = 0.7) +
+  scale_colour_manual(values = c("grey70", "purple")) +
+  labs(x = "dIF in vitro (CS - air)", y = "dIF in vivo (smoker - non-smoker)",
+       colour = "Switch in both", title = "Isoform usage changes: in vitro vs smokers") +
+  theme_minimal()
+print(dIFplot)
+ggsave(file.path(outDir, "dIF_invitro_vs_invivo.png"), dIFplot, width = 6, height = 5, bg = "white")
 ```
-
-Inspecting samples and metadata
-```{r}
-
-# Inspect isoform and sample identifiers
-head(rownames(iso_vivo))
-head(colnames(iso_vivo))
-
-# Inspect available metadata
-head(meta_vivo)
-str(meta_vivo)
-
-# Count samples in each smoking group
-table(meta_vivo$smoking)
-
-# Check the distribution of sex between groups
-table(meta_vivo$smoking, meta_vivo$sex)
-
-# Summarise age
-summary(meta_vivo$age)
-
-```
-
-Making sure data and metadata align - we should receive True at the end
-```{r}
-
-# Check whether every count-matrix sample
-# has a matching metadata entry
-all(colnames(iso_vivo) %in% rownames(meta_vivo))
-
-# Check for duplicated sample identifiers
-anyDuplicated(colnames(iso_vivo))
-anyDuplicated(rownames(meta_vivo))
-
-# Reorder metadata to match the count matrix
-meta_vivo <- meta_vivo[
-  colnames(iso_vivo), ,
-  drop = FALSE
-]
-
-# Verify exact alignment
-identical(
-  colnames(iso_vivo),
-  rownames(meta_vivo)
-)
-```
-
-Load gene-to-isoform annotation
-```{r}
-
-# Load the annotation data
-isoInfo <- readRDS(
-  paste0(
-    "/home/projects/22140/exam_data/",
-    "Homo_sapiens.GRCh38.107.chr_patch_hapl_scaff_tx_info.Rds"
-  )
-)
-
-# Inspect annotation structure
-dim(isoInfo)
-colnames(isoInfo)
-head(isoInfo)
-
-# Match isoforms to their genes
-tx_info <- isoInfo[
-  match(rownames(iso_vivo), isoInfo$transcript_id),
-  c("transcript_id", "gene_id")
-]
-
-# Check whether any isoforms lack a gene mapping
-sum(is.na(tx_info$gene_id))
-
-# Inspect the matched annotations
-head(tx_info)
-
-```
-
-Preparing sample metadata
-
-```{r}
-
-# Confirm that sample IDs are correctly aligned
-stopifnot(all(colnames(iso_vivo) == rownames(meta_vivo)))
-
-# Create a sample identifier for DEXSeq
-meta_vivo$sample <- factor(rownames(meta_vivo))
-
-# Set nonsmokers as the reference group
-meta_vivo$smoking <- relevel(
-  factor(meta_vivo$smoking),
-  ref = "nonsmoker"
-)
-
-# Ensure sex is a factor
-meta_vivo$sex <- factor(meta_vivo$sex)
-
-# Standardise age for the statistical model
-meta_vivo$age_scaled <- as.numeric(scale(meta_vivo$age))
-
-# Inspect the prepared metadata
-head(meta_vivo)
-str(meta_vivo)
-```
-
